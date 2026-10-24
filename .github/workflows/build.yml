@@ -1,0 +1,90 @@
+name: Build
+
+# Every push to main runs the tests and builds the app for Macs (Apple silicon and Intel) and Windows.
+# Pushing a tag like v1.0.0 also publishes the zips as a GitHub Release.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - run: dotnet test GDiag.Tests/GDiag.Tests.csproj -r linux-x64
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Publish
+        run: >
+          dotnet publish GDiag/GDiag.csproj
+          -c Release -r win-x64 --self-contained true
+          -p:PublishSingleFile=true -p:DebugType=none
+          -o publish
+      - name: Package
+        shell: pwsh
+        run: |
+          Copy-Item README.md, LICENSE publish/
+          Compress-Archive -Path publish/* -DestinationPath GDiag-win-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GDiag-win-x64
+          path: GDiag-win-x64.zip
+
+  build-mac:
+    needs: test
+    runs-on: macos-14
+    strategy:
+      matrix:
+        rid: [osx-arm64, osx-x64]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Build app bundle
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          [[ "$GITHUB_REF" == refs/tags/v* ]] || VERSION="0.0.${{ github.run_number }}"
+          VERSION="$VERSION" bash mac/build-app.sh ${{ matrix.rid }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GDiag-${{ matrix.rid }}
+          path: GDiag-${{ matrix.rid }}.zip
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-mac]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cat > notes.md <<'EOF'
+          **Mac:** `GDiag-osx-arm64.zip` for M chips, `GDiag-osx-x64.zip` for Intel. Unzip, move G-Diag.app to Applications, and the first time right-click it and choose Open (it is not notarized).
+
+          **Windows:** unzip `GDiag-win-x64.zip` and run GDiag.exe. Keep glfw3.dll and cimgui.dll next to it.
+
+          No .NET install and no drivers needed. Start with File > Connect to the demo car to look around.
+          EOF
+          gh release create "$GITHUB_REF_NAME" --repo "${{ github.repository }}" --title "G-Diag $GITHUB_REF_NAME" \
+            --notes-file notes.md GDiag-osx-arm64.zip GDiag-osx-x64.zip GDiag-win-x64.zip

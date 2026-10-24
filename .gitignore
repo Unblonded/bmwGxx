@@ -1,0 +1,10 @@
+bin/
+obj/
+publish/
+publish-mac/
+*.zip
+*.user
+.vs/
+.vscode/
+.idea/
+TestResults/
