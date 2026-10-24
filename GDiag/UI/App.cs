@@ -302,6 +302,9 @@ namespace GDiag.UI
                 CloseConnection();
             }
 
+            // fonts are rasterized at 18pt times the Retina factor; this brings them back to the chosen size
+            ImGui.GetIO().FontGlobalScale = Settings.FontSize / 18f / Fonts.RasterScale;
+
             var viewport = ImGui.GetMainViewport();
             ImGui.SetNextWindowPos(viewport.WorkPos);
             ImGui.SetNextWindowSize(viewport.WorkSize);
@@ -565,7 +568,7 @@ namespace GDiag.UI
             }
             float font = Settings.FontSize;
             ImGui.SetNextItemWidth(S(220));
-            if (ImGui.SliderFloat("Text size (after restart)", ref font, 14f, 28f, "%.0f"))
+            if (ImGui.SliderFloat("Text size", ref font, 14f, 28f, "%.0f"))
             {
                 Settings.FontSize = font;
                 changed = true;

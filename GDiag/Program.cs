@@ -102,7 +102,8 @@ namespace GDiag
                 string fontPath = Fonts.MainFontPath;
                 if (fontPath != null)
                 {
-                    int baseSize = (int)Math.Round(AppSettings.Current.FontSize * Widgets.UiScale * Fonts.RasterScale);
+                    // the text size setting is applied as FontGlobalScale in App.Draw, so the atlas is built once at 18pt
+                    int baseSize = (int)Math.Round(18 * Widgets.UiScale * Fonts.RasterScale);
                     controller = new ImGuiController(gl, window, input, new ImGuiFontConfig(fontPath, baseSize), () =>
                     {
                         ConfigureIO();
