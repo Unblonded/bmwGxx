@@ -70,7 +70,7 @@ dotnet test                              # 19 tests: HSFZ client against the sim
 mac/build-app.sh                         # G-Diag.app for Apple silicon (osx-x64 for Intel)
 ```
 
-GitHub Actions runs the tests and builds the Mac and Windows zips on every push. Pushing a `v*` tag publishes a release.
+GitHub Actions runs the tests, builds the Mac and Windows zips and publishes them as a release on every push to `main` (`v1.0.<run number>`). Push a tag like `v2.0.0` to release under that name instead.
 
 ## Layout
 

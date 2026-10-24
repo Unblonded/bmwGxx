@@ -1,7 +1,8 @@
 name: Build
 
-# Every push to main runs the tests and builds the app for Macs (Apple silicon and Intel) and Windows.
-# Pushing a tag like v1.0.0 also publishes the zips as a GitHub Release.
+# Every push to main runs the tests, builds the app for Macs (Apple silicon and Intel) and Windows, and
+# publishes the zips as a GitHub Release: v1.0.<run number> for a push to main, or the tag's own name when
+# a tag like v2.0.0 is pushed. Pull requests only test and build.
 on:
   push:
     branches: [main]
@@ -11,6 +12,9 @@ on:
 
 permissions:
   contents: write
+
+env:
+  RELEASE_TAG: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v1.0.{0}', github.run_number) }}
 
 jobs:
   test:
@@ -59,16 +63,14 @@ jobs:
           dotnet-version: '8.0.x'
       - name: Build app bundle
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          [[ "$GITHUB_REF" == refs/tags/v* ]] || VERSION="0.0.${{ github.run_number }}"
-          VERSION="$VERSION" bash mac/build-app.sh ${{ matrix.rid }}
+          VERSION="${RELEASE_TAG#v}" bash mac/build-app.sh ${{ matrix.rid }}
       - uses: actions/upload-artifact@v4
         with:
           name: GDiag-${{ matrix.rid }}
           path: GDiag-${{ matrix.rid }}.zip
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
     needs: [build-windows, build-mac]
     runs-on: ubuntu-latest
     steps:
@@ -80,11 +82,13 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cat > notes.md <<'EOF'
+          Built from `${{ github.ref_name }}` (${{ github.sha }}).
+
           **Mac:** `GDiag-osx-arm64.zip` for M chips, `GDiag-osx-x64.zip` for Intel. Unzip, move G-Diag.app to Applications, and the first time right-click it and choose Open (it is not notarized).
 
           **Windows:** unzip `GDiag-win-x64.zip` and run GDiag.exe. Keep glfw3.dll and cimgui.dll next to it.
 
           No .NET install and no drivers needed. Start with File > Connect to the demo car to look around.
           EOF
-          gh release create "$GITHUB_REF_NAME" --repo "${{ github.repository }}" --title "G-Diag $GITHUB_REF_NAME" \
+          gh release create "$RELEASE_TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "G-Diag $RELEASE_TAG" \
             --notes-file notes.md GDiag-osx-arm64.zip GDiag-osx-x64.zip GDiag-win-x64.zip
