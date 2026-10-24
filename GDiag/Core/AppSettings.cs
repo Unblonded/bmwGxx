@@ -15,6 +15,13 @@ namespace GDiag
             : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "GDiag");
         static string SettingsPath => Path.Combine(SettingsFolder, "settings.json");
 
+        // "j2534": a J2534 adapter such as the Tactrix OpenPort 2.0 on D-CAN; "enet": an ENET cable
+        public string Connection { get; set; } = "j2534";
+        // J2534 driver library picked last (its file path)
+        public string LastJ2534Driver { get; set; } = "";
+        // J2534 driver libraries added by hand (macOS and Linux have no registry that lists them)
+        public List<string> J2534DriverFiles { get; set; } = new List<string>();
+
         // gateway addresses typed in by hand or found by discovery, newest first
         public List<string> RecentGateways { get; set; } = new List<string>();
         public string LastFaFile { get; set; } = "";

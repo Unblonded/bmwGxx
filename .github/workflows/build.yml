@@ -34,21 +34,22 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: '8.0.x'
+      # 32-bit on purpose: the OpenPort's Windows J2534 driver (and nearly every other) is 32-bit
       - name: Publish
         run: >
           dotnet publish GDiag/GDiag.csproj
-          -c Release -r win-x64 --self-contained true
+          -c Release -r win-x86 --self-contained true
           -p:PublishSingleFile=true -p:DebugType=none
           -o publish
       - name: Package
         shell: pwsh
         run: |
           Copy-Item README.md, LICENSE publish/
-          Compress-Archive -Path publish/* -DestinationPath GDiag-win-x64.zip
+          Compress-Archive -Path publish/* -DestinationPath GDiag-win-x86.zip
       - uses: actions/upload-artifact@v4
         with:
-          name: GDiag-win-x64
-          path: GDiag-win-x64.zip
+          name: GDiag-win-x86
+          path: GDiag-win-x86.zip
 
   build-mac:
     needs: test
@@ -84,11 +85,11 @@ jobs:
           cat > notes.md <<'EOF'
           Built from `${{ github.ref_name }}` (${{ github.sha }}).
 
-          **Mac:** `GDiag-osx-arm64.zip` for M chips, `GDiag-osx-x64.zip` for Intel. Unzip, move G-Diag.app to Applications, and the first time right-click it and choose Open (it is not notarized).
+          **Mac:** `GDiag-osx-arm64.zip` for M chips, `GDiag-osx-x64.zip` for Intel. Unzip, move G-Diag.app to Applications, and the first time right-click it and choose Open (it is not notarized). For the OpenPort 2.0 install its driver first: `brew install bisak/tap/openport-j2534`.
 
-          **Windows:** unzip `GDiag-win-x64.zip` and run GDiag.exe. Keep glfw3.dll and cimgui.dll next to it.
+          **Windows:** unzip `GDiag-win-x86.zip` and run GDiag.exe. Keep glfw3.dll and cimgui.dll next to it. For the OpenPort 2.0 install Tactrix's J2534 driver first.
 
-          No .NET install and no drivers needed. Start with File > Connect to the demo car to look around.
+          No .NET install needed. Start with File > Connect to the demo car to look around.
           EOF
           gh release create "$RELEASE_TAG" --repo "${{ github.repository }}" --target "${{ github.sha }}" --title "G-Diag $RELEASE_TAG" \
-            --notes-file notes.md GDiag-osx-arm64.zip GDiag-osx-x64.zip GDiag-win-x64.zip
+            --notes-file notes.md GDiag-osx-arm64.zip GDiag-osx-x64.zip GDiag-win-x86.zip

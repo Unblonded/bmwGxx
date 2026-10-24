@@ -45,6 +45,17 @@ namespace GDiag
                             Console.WriteLine($"{car.Address}  VIN {car.Vin}  MAC {car.Mac}  ({car.Raw})");
                         }
                         return 0;
+                    case "--drivers":
+                        var drivers = J2534Driver.Find(AppSettings.Current.J2534DriverFiles);
+                        for (int i = 0; i < drivers.Count; i++)
+                        {
+                            Console.WriteLine($"{i}: {drivers[i].Name}  {drivers[i].Library}  ({drivers[i].LongSize * 8}-bit longs)");
+                        }
+                        if (drivers.Count == 0)
+                        {
+                            Console.WriteLine("No J2534 driver found.");
+                        }
+                        return 0;
                     case "--scan" when args.Length >= 2:
                         return RunScan(args[1]);
                 }
@@ -175,14 +186,34 @@ namespace GDiag
             return 0;
         }
 
-        // "--scan host[:port]": connect, list the control units and their fault codes, for checking a setup quickly
+        // "--scan host[:port]" (ENET), "--scan j2534[:N]" (driver N from --drivers, e.g. the OpenPort) or
+        // "--scan sim-dcan" (the demo car on simulated D-CAN): connect, list the control units and their fault codes
+        static IDiagTransport OpenTransport(string target)
+        {
+            if (target == "sim-dcan")
+            {
+                return new DCanTransport(new SimCanBus(new SimVehicle()));
+            }
+            if (target.StartsWith("j2534", StringComparison.OrdinalIgnoreCase))
+            {
+                var drivers = J2534Driver.Find(AppSettings.Current.J2534DriverFiles);
+                int index = target.Length > 6 && int.TryParse(target.Substring(6), out int n) ? n : 0;
+                if (index >= drivers.Count)
+                {
+                    throw new InvalidOperationException("No such J2534 driver, see --drivers");
+                }
+                return new DCanTransport(new J2534CanBus(drivers[index]));
+            }
+            var (host, port) = SplitHostPort(target);
+            return new HsfzClient(host, port);
+        }
+
         static int RunScan(string target)
         {
-            var (host, port) = SplitHostPort(target);
             try
             {
-                using var session = new CarSession(new HsfzClient(host, port));
-                Console.WriteLine($"Connected to {host}:{port}. VIN: {session.ReadVin()}");
+                using var session = new CarSession(OpenTransport(target));
+                Console.WriteLine($"Connected via {session.Uds.Description}. VIN: {session.ReadVin()}");
                 foreach (var module in session.Scan(AppSettings.Current.FullScan, p => Console.Error.WriteLine(p)))
                 {
                     session.ReadDtcs(module);

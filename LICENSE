@@ -3,7 +3,8 @@ MIT License
 Copyright (c) 2026 bmwGxx contributors
 Portions (UI theme, fonts, widgets, file dialogs, log buffer and the German translator)
 come from Diogenes-ImGui (https://github.com/Unblonded/Diogenes-ImGui), which is based on
-CaesarSuite, Copyright (c) 2020 JinGen Lim, also under the MIT License.
+CaesarSuite, Copyright (c) 2020 JinGen Lim, also under the MIT License. The J2534 driver lookup
+follows J2534-Sharp, Copyright (c) 2018 Brian Humlicek (MIT), as adapted in Diogenes-ImGui.
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

@@ -151,6 +151,39 @@ namespace GDiag
             return Hex.Format(record);
         }
 
+        // values that only answered through plain OBD-II, so they aren't asked the BMW way again
+        readonly ConcurrentDictionary<string, bool> ObdOnly = new ConcurrentDictionary<string, bool>();
+
+        // One live value. Engine values (DIDs F4xx) are asked as UDS first; over D-CAN, a DME that refuses
+        // them is asked again as standard OBD-II mode 01, which every car has to answer.
+        public byte[] ReadLive(LiveValue value, out UdsResponse response)
+        {
+            response = null;
+            bool obdCapable = Uds.Transport is DCanTransport && (value.Did & 0xFF00) == 0xF400 && value.Module == 0x12;
+            if (!ObdOnly.ContainsKey(value.Id))
+            {
+                byte[] record = Uds.ReadDid(value.Module, value.Did, out response);
+                if (record != null || !obdCapable)
+                {
+                    return record;
+                }
+            }
+            if (!obdCapable)
+            {
+                return null;
+            }
+            byte pid = (byte)value.Did;
+            var obd = Uds.Request(DCanTransport.ObdEngine, 0x01, pid);
+            if (obd.Positive && obd.Data.Length > 2 && obd.Data[1] == pid)
+            {
+                ObdOnly[value.Id] = true;
+                response = obd;
+                return obd.Data.Skip(2).ToArray();
+            }
+            response ??= obd;
+            return null;
+        }
+
         public void ReadDtcs(ModuleState module)
         {
             var dtcs = Uds.ReadDtcs(module.Address, out var response);

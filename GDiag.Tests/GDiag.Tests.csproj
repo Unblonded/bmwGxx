@@ -15,7 +15,8 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\GDiag\GDiag.csproj" />
+    <!-- the tests run 64-bit; the app itself builds 32-bit on Windows for the J2534 drivers -->
+    <ProjectReference Include="..\GDiag\GDiag.csproj" AdditionalProperties="RuntimeIdentifier=$(RuntimeIdentifier)" />
   </ItemGroup>
 
 </Project>

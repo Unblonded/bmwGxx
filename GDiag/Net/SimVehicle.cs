@@ -166,6 +166,17 @@ namespace GDiag.Net
             return null;
         }
 
+        // standard OBD-II mode 01 data for a PID, or null when the engine doesn't support it
+        public byte[] ObdMode01(byte pid)
+        {
+            if (pid == 0x00)
+            {
+                // supported PIDs 01-20: 04 05 0B 0C 0D 0E 0F 10 11 1F
+                return new byte[] { 0x18, 0x3F, 0x80, 0x02 };
+            }
+            return EngineValue(pid);
+        }
+
         // a gently idling, warming engine
         byte[] EngineValue(byte pid)
         {

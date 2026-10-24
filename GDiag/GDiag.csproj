@@ -3,10 +3,14 @@
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
-    <!-- ENET is plain Ethernet, so there are no 32-bit adapter drivers to match: build for the computer's own CPU. -->
-    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('Windows'))">win-x64</RuntimeIdentifier>
+    <!-- J2534 drivers on Windows (the Tactrix OpenPort's op20pt32.dll included) are 32-bit, so the Windows build is x86.
+         On a Mac it builds for the Mac's own CPU, since the J2534 drivers there are native (arm64 on M chips). -->
+    <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('Windows'))">win-x86</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('OSX')) And '$([System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture)' == 'Arm64'">osx-arm64</RuntimeIdentifier>
     <RuntimeIdentifier Condition="'$(RuntimeIdentifier)' == '' And $([MSBuild]::IsOSPlatform('OSX'))">osx-x64</RuntimeIdentifier>
+    <PlatformTarget Condition="'$(RuntimeIdentifier)' == 'win-x86'">x86</PlatformTarget>
+    <!-- restored for all of these so the 64-bit test project can reference it -->
+    <RuntimeIdentifiers>win-x86;win-x64;osx-arm64;osx-x64;linux-x64</RuntimeIdentifiers>
     <SelfContained>false</SelfContained>
     <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
     <Nullable>disable</Nullable>

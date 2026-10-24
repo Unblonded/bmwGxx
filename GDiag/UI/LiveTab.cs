@@ -79,7 +79,7 @@ namespace GDiag.UI
                         byte[] record;
                         try
                         {
-                            record = session.Uds.ReadDid(value.Module, value.Did, out var response);
+                            record = session.ReadLive(value, out var response);
                             if (record is null)
                             {
                                 refused[value.Id] = refused.TryGetValue(value.Id, out int r) ? r : round;
@@ -175,7 +175,9 @@ namespace GDiag.UI
                 Stop();
             }
             ImGui.SameLine();
-            Dim("Engine values come from the DME (0x12) as standard OBD values. Not every DME answers them over ENET.");
+            Dim(App.Session?.Uds.Transport is GDiag.Net.DCanTransport
+                ? "Engine values come from the DME (0x12). If it refuses the BMW request, they are read as plain OBD-II (7E0/7E8) instead."
+                : "Engine values come from the DME (0x12) as standard OBD values. Not every DME answers them over ENET.");
             ImGui.Spacing();
 
             // gauges, as many per row as fit

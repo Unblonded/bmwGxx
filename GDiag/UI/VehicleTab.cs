@@ -1,3 +1,4 @@
+using System;
 using System.Linq;
 using System.Numerics;
 using GDiag.Bmw;
@@ -99,15 +100,18 @@ namespace GDiag.UI
             ImGui.Spacing();
             BigText("Connect to a car to see its control units");
             ImGui.Spacing();
-            Dim("What you need:");
-            ImGui.BulletText("An ENET cable (Ethernet to OBD-II). G series cars need the version with the activation");
-            ImGui.Text("    resistor between OBD pins 8 and 16, which nearly every ENET cable has.");
+            Dim("With a Tactrix OpenPort 2.0 (or another J2534 adapter):");
+            ImGui.BulletText(OperatingSystem.IsMacOS()
+                ? "Install its driver: brew install bisak/tap/openport-j2534, then press Refresh in step 1."
+                : "Install Tactrix's J2534 driver, then press Refresh in step 1.");
+            ImGui.BulletText("Plug it into the OBD port. It talks BMW D-CAN on pins 6 and 14 at 500 kbit/s.");
             ImGui.BulletText("Ignition on (press Start without the brake), a battery charger if you'll be a while.");
-            ImGui.BulletText("The network adapter set to get its address automatically. With no DHCP server the computer");
-            ImGui.Text("    gives itself a 169.254.x.x address after a few seconds, and so does the car.");
-            ImGui.BulletText("No drivers: ENET is plain Ethernet, so it works the same on macOS, Windows and Linux.");
             ImGui.Spacing();
-            Dim("Then press Find in step 1, or try the demo car.");
+            Dim("Or with an ENET cable:");
+            ImGui.BulletText("Choose ENET cable in step 1. G series cars need the activation resistor between OBD pins 8 and 16.");
+            ImGui.BulletText("Leave the network adapter on automatic: the computer and the car pick 169.254.x.x addresses.");
+            ImGui.Spacing();
+            Dim("Then press Connect in step 2, or try the demo car.");
         }
 
         static void DrawSummary(CarSession session)

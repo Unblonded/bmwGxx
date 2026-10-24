@@ -80,7 +80,8 @@ namespace GDiag.UI
                 int count = FaultTexts.Load(Settings.FaultTextFile);
                 Console.WriteLine($"Loaded {count} fault code texts from {Settings.FaultTextFile}");
             }
-            Console.WriteLine("G-Diag for BMW F/G series over ENET. Plug in the ENET cable, switch the ignition on, then find your car.");
+            Console.WriteLine("G-Diag for BMW F/G series. Plug the OpenPort 2.0 (or an ENET cable) into the OBD port, switch the ignition on, then connect.");
+            RefreshDrivers();
             if (demo)
             {
                 ConnectDemo();
@@ -197,8 +198,15 @@ namespace GDiag.UI
             });
         }
 
+        bool UseJ2534 => Settings.Connection != "enet";
+
         void Connect()
         {
+            if (UseJ2534)
+            {
+                ConnectJ2534();
+                return;
+            }
             string target = GatewayAddress.Trim();
             if (target.Length == 0)
             {
@@ -206,9 +214,31 @@ namespace GDiag.UI
                 return;
             }
             var (host, port) = Program.SplitHostPort(target);
-            RunBackground("Connecting", () =>
+            ConnectWith("Connecting", () => new HsfzClient(host, port), () => Settings.AddRecentGateway(target));
+        }
+
+        void ConnectJ2534()
+        {
+            var driver = SelectedDriver;
+            if (driver is null)
             {
-                var session = new CarSession(new HsfzClient(host, port));
+                ShowMessage("No J2534 driver", OperatingSystem.IsMacOS()
+                    ? "Install the OpenPort 2.0 driver with: brew install bisak/tap/openport-j2534\nThen press Refresh. Other drivers can be added with Add driver."
+                    : "Install the Tactrix OpenPort 2.0 driver (J2534 \"Tactrix Openport 2.0 J2534\" from tactrix.com), then press Refresh.");
+                return;
+            }
+            Settings.LastJ2534Driver = driver.Library;
+            Settings.Save();
+            ConnectWith($"Opening {driver.Name}", () => new DCanTransport(new J2534CanBus(driver)), null);
+        }
+
+        // opens the transport in the background, reads the VIN and scans
+        void ConnectWith(string label, Func<IDiagTransport> open, Action onConnected)
+        {
+            CloseConnection();
+            RunBackground(label, () =>
+            {
+                var session = new CarSession(open());
                 AttachTrace(session);
                 string vin;
                 try
@@ -220,29 +250,63 @@ namespace GDiag.UI
                     session.Dispose();
                     throw;
                 }
-                Console.WriteLine(vin.Length > 0 ? $"Connected to {host}:{port}, VIN {vin}" : $"Connected to {host}:{port}, but the gateway did not report a VIN");
+                string over = session.Uds.Description;
+                Console.WriteLine(vin.Length > 0 ? $"Connected via {over}, VIN {vin}"
+                    : $"Opened {over}, but the gateway did not report a VIN. Is the ignition on? Scanning anyway.");
                 OnMainThread(() =>
                 {
                     Session = session;
                     Scanned = false;
-                    Settings.AddRecentGateway(target);
+                    onConnected?.Invoke();
                     Scan();
                 });
             });
         }
 
+        // the demo car, over the same D-CAN code as the OpenPort (or ENET's message layer when ENET is chosen)
         void ConnectDemo()
         {
-            CloseConnection();
-            var session = new CarSession(new SimTransport(new SimVehicle()));
-            AttachTrace(session);
-            Session = session;
-            Scanned = false;
-            RunBackground("Connecting to the demo car", () =>
+            var car = new SimVehicle();
+            ConnectWith("Connecting to the demo car", () => UseJ2534 ? new DCanTransport(new SimCanBus(car)) : new SimTransport(car), null);
+        }
+
+        // ---------------------------------------------------------------- J2534 drivers
+
+        List<J2534Driver> Drivers = new List<J2534Driver>();
+        int SelectedDriverIndex = -1;
+
+        J2534Driver SelectedDriver => SelectedDriverIndex >= 0 && SelectedDriverIndex < Drivers.Count ? Drivers[SelectedDriverIndex] : null;
+
+        void RefreshDrivers()
+        {
+            Drivers = J2534Driver.Find(Settings.J2534DriverFiles);
+            SelectedDriverIndex = Drivers.FindIndex(d => d.Library == Settings.LastJ2534Driver);
+            if (SelectedDriverIndex < 0)
             {
-                session.ReadVin();
-                Console.WriteLine($"Connected to the demo car (made-up data), VIN {session.Vin}");
-            }, Scan);
+                // prefer an OpenPort when several drivers are installed
+                SelectedDriverIndex = Drivers.FindIndex(d => d.Name.Contains("openport", StringComparison.OrdinalIgnoreCase) || d.Library.Contains("op20", StringComparison.OrdinalIgnoreCase));
+            }
+            if (SelectedDriverIndex < 0 && Drivers.Count > 0)
+            {
+                SelectedDriverIndex = 0;
+            }
+            Console.WriteLine(Drivers.Count == 0 ? "No J2534 driver found." : $"J2534 drivers: {string.Join(", ", Drivers.Select(d => d.Name))}");
+        }
+
+        void AddDriverFile()
+        {
+            string path = FileDialogs.OpenFile("J2534 driver library (.dylib, .so or .dll)", "Driver libraries (*.dll;*.dylib;*.so)|*.dll;*.dylib;*.so|All files (*.*)|*.*");
+            if (path is null)
+            {
+                return;
+            }
+            if (!Settings.J2534DriverFiles.Contains(path))
+            {
+                Settings.J2534DriverFiles.Add(path);
+            }
+            Settings.LastJ2534Driver = path;
+            Settings.Save();
+            RefreshDrivers();
         }
 
         void AttachTrace(CarSession session)
@@ -378,49 +442,104 @@ namespace GDiag.UI
 
         void DrawSetupBar()
         {
-            float height = ImGui.GetFrameHeightWithSpacing() * 2 + ImGui.GetTextLineHeightWithSpacing() + ImGui.GetStyle().WindowPadding.Y * 2;
+            float height = ImGui.GetFrameHeightWithSpacing() * 3 + ImGui.GetTextLineHeightWithSpacing() + ImGui.GetStyle().WindowPadding.Y * 2;
             float spacing = ImGui.GetStyle().ItemSpacing.X;
             float third = (ImGui.GetContentRegionAvail().X - spacing * 2) / 3;
 
-            // 1: find the car
+            // 1: choose the adapter (OpenPort/J2534 or ENET) and find the car
             BeginCard("step1", new Vector2(third, height));
-            StepTitle(1, "Find your car", GatewayAddress.Length > 0 || Connected);
-            ImGui.SetNextItemWidth(-S(120));
-            ImGui.InputTextWithHint("##addr", "169.254.x.x", ref GatewayAddress, 64);
-            Tooltip("The gateway's IP address. Find car fills it in; add :port for the simulator.");
-            ImGui.SameLine();
-            if (ImGui.BeginCombo("##recent", "", ImGuiComboFlags.NoPreview))
+            StepTitle(1, UseJ2534 ? "Choose your adapter" : "Find your car", Connected || (UseJ2534 ? SelectedDriver != null : GatewayAddress.Length > 0));
+            ImGui.BeginDisabled(busy || Connected);
+            if (ImGui.RadioButton("OpenPort 2.0 / J2534", UseJ2534))
             {
-                foreach (var car in Discovered)
-                {
-                    if (ImGui.Selectable($"{car}##d{car.Address}"))
-                    {
-                        GatewayAddress = car.Address;
-                    }
-                }
-                foreach (string recent in Settings.RecentGateways)
-                {
-                    if (ImGui.Selectable($"{recent}  (recent)##r{recent}"))
-                    {
-                        GatewayAddress = recent;
-                    }
-                }
-                if (Discovered.Count == 0 && Settings.RecentGateways.Count == 0)
-                {
-                    ImGui.TextDisabled("Nothing found yet");
-                }
-                ImGui.EndCombo();
+                Settings.Connection = "j2534";
+                Settings.Save();
             }
+            Tooltip("A J2534 pass-through adapter on the OBD port's CAN pins (BMW D-CAN, 500 kbit/s).");
             ImGui.SameLine();
-            if (Button($"{Icons.Search} Find", !busy && !Connected, "Disconnect first"))
+            if (ImGui.RadioButton("ENET cable", !UseJ2534))
             {
-                Discover();
+                Settings.Connection = "enet";
+                Settings.Save();
+            }
+            Tooltip("Ethernet to OBD (HSFZ). Faster, and what BMW's own tools use on G series.");
+            ImGui.EndDisabled();
+
+            if (UseJ2534)
+            {
+                ImGui.SetNextItemWidth(-S(170));
+                string preview = SelectedDriver?.Name ?? (Drivers.Count == 0 ? "no driver found" : "choose a driver");
+                ImGui.BeginDisabled(busy || Connected);
+                if (ImGui.BeginCombo("##driver", preview))
+                {
+                    for (int i = 0; i < Drivers.Count; i++)
+                    {
+                        if (ImGui.Selectable($"{Drivers[i]}##drv{i}", i == SelectedDriverIndex))
+                        {
+                            SelectedDriverIndex = i;
+                        }
+                        Tooltip($"{Drivers[i].Library}\n{Drivers[i].LongSize * 8}-bit integers");
+                    }
+                    if (Drivers.Count == 0)
+                    {
+                        ImGui.TextDisabled(OperatingSystem.IsMacOS() ? "brew install bisak/tap/openport-j2534" : "Install the Tactrix OpenPort driver");
+                    }
+                    ImGui.EndCombo();
+                }
+                ImGui.SameLine();
+                if (ImGui.Button($"{Icons.Refresh}##refresh"))
+                {
+                    RefreshDrivers();
+                }
+                Tooltip("Look for installed J2534 drivers again");
+                ImGui.SameLine();
+                if (ImGui.Button($"{Icons.Add} Add"))
+                {
+                    AddDriverFile();
+                }
+                Tooltip("Pick a J2534 driver library by hand (.dylib on a Mac, .dll on Windows)");
+                ImGui.EndDisabled();
+            }
+            else
+            {
+                ImGui.SetNextItemWidth(-S(120));
+                ImGui.InputTextWithHint("##addr", "169.254.x.x", ref GatewayAddress, 64);
+                Tooltip("The gateway's IP address. Find fills it in; add :port for the simulator.");
+                ImGui.SameLine();
+                if (ImGui.BeginCombo("##recent", "", ImGuiComboFlags.NoPreview))
+                {
+                    foreach (var car in Discovered)
+                    {
+                        if (ImGui.Selectable($"{car}##d{car.Address}"))
+                        {
+                            GatewayAddress = car.Address;
+                        }
+                    }
+                    foreach (string recent in Settings.RecentGateways)
+                    {
+                        if (ImGui.Selectable($"{recent}  (recent)##r{recent}"))
+                        {
+                            GatewayAddress = recent;
+                        }
+                    }
+                    if (Discovered.Count == 0 && Settings.RecentGateways.Count == 0)
+                    {
+                        ImGui.TextDisabled("Nothing found yet");
+                    }
+                    ImGui.EndCombo();
+                }
+                ImGui.SameLine();
+                if (Button($"{Icons.Search} Find", !busy && !Connected, "Disconnect first"))
+                {
+                    Discover();
+                }
             }
             if (ColoredButton($"{Icons.Car} Try the demo car", Theme.Accent2, default, !busy))
             {
                 ConnectDemo();
             }
-            Tooltip("A simulated G20 with made-up data, to look around without a car.");
+            Tooltip(UseJ2534 ? "A simulated G20 on a simulated D-CAN bus, to look around without a car."
+                             : "A simulated G20 with made-up data, to look around without a car.");
             EndCard();
 
             // 2: connect
@@ -441,8 +560,8 @@ namespace GDiag.UI
             }
             else
             {
-                Dim("ENET cable in the OBD port, ignition on.");
-                if (PrimaryButton($"{Icons.Plug}  Connect", Theme.Accent, default, !busy && GatewayAddress.Trim().Length > 0))
+                Dim(UseJ2534 ? "OpenPort in the OBD port, ignition on." : "ENET cable in the OBD port, ignition on.");
+                if (PrimaryButton($"{Icons.Plug}  Connect", Theme.Accent, default, !busy && (UseJ2534 ? SelectedDriver != null : GatewayAddress.Trim().Length > 0)))
                 {
                     Connect();
                 }
