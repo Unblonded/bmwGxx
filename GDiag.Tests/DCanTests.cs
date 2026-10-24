@@ -94,8 +94,48 @@ namespace GDiag.Tests
             // PID 0x00 (supported PIDs) has no UDS DID in the simulator, only the OBD answer
             var supported = new LiveValue { Id = "pids", Name = "Supported PIDs", Module = 0x12, Did = 0xF400, ByteCount = 4 };
             byte[] record = session.ReadLive(supported, out var response);
-            Assert.Equal(new byte[] { 0x18, 0x3F, 0x80, 0x02 }, record);
+            Assert.Equal(4, record.Length);
+            // bit for PID 0C (engine speed)
+            Assert.NotEqual(0, record[1] & 0x10);
             Assert.Equal(0x41, response.Data[0]);
+        }
+
+        [Fact]
+        public void SeveralValuesShareOneRequest()
+        {
+            var bus = new SimCanBus(new SimVehicle());
+            using var session = new CarSession(new DCanTransport(bus));
+            var values = LiveData.Engine.Where(v => v.Id is "rpm" or "speed" or "coolant" or "oil" or "map").ToList();
+            var records = session.ReadLiveBatch(values);
+            Assert.Equal(5, records.Count);
+            Assert.InRange(values.Single(v => v.Id == "oil").Decode(records[values.Single(v => v.Id == "oil")]).Value, 0, 120);
+            // one 22 request went out for all five (a first frame: 11 bytes don't fit in one CAN frame)
+            Assert.Single(bus.Sent, f => f.id == 0x6F1 && f.data[1] == 0x10 && f.data[3] == 0x22);
+        }
+
+        [Fact]
+        public void SupportedPidsComeFromTheBitmaps()
+        {
+            using var session = new CarSession(new DCanTransport(new SimCanBus(new SimVehicle())));
+            var pids = session.ReadSupportedPids();
+            Assert.Contains((byte)0x0C, pids);
+            Assert.Contains((byte)0xA6, pids);
+            Assert.DoesNotContain((byte)0x5C, pids);
+        }
+
+        [Fact]
+        public void CodingAndFaultDetails()
+        {
+            using var session = new CarSession(new DCanTransport(new SimCanBus(new SimVehicle())));
+            var bdc = new ModuleState { Address = 0x40, Info = EcuCatalog.Lookup(0x40) };
+            var blocks = session.ReadCoding(bdc);
+            Assert.Equal(new ushort[] { 0x3000, 0x3001, 0x3002, 0x3010, 0x3020 }, blocks.Keys);
+
+            session.ReadDtcs(bdc);
+            var dtc = Assert.Single(bdc.Dtcs);
+            session.ReadDtcDetails(dtc);
+            Assert.Equal(new uint?[] { 21940, 24105 }, dtc.Details.Snapshots.Select(s => s.Mileage));
+            Assert.Equal(4, dtc.Details.Occurrences);
         }
 
         [Fact]

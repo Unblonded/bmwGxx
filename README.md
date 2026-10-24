@@ -74,6 +74,10 @@ GDiag --sim-server [port]            serve the simulated car over real HSFZ on 1
 GDiag --drivers                      list installed J2534 drivers
 GDiag --scan j2534[:N]               list modules, CAFDs and fault codes through J2534 driver N (default 0)
 GDiag --scan sim-dcan                the same against the demo car on a simulated D-CAN bus
+GDiag --live j2534 [rounds]          read every live value (and the engine's supported PIDs) and print them
+GDiag --read j2534 12:22F40C ...     send read-only requests (ADDRESS:HEX, FE = OBD-II on 7E0) and print the answers
+GDiag --did-scan j2534 12 4000 4FFF  list every DID in a range a module answers (read only)
+GDiag --coding j2534 40 [file.json]  read a module's coding blocks; save to the file, or compare with it if it exists
 GDiag --discover                     list cars on the ENET network
 GDiag --scan 169.254.12.34[:port]    the same over ENET
 GDiag --translate "SPIEGEL_ANKLAPPEN_FB"
@@ -103,10 +107,11 @@ GitHub Actions runs the tests, builds the Mac and Windows zips and publishes the
 
 ## Status and limits — read before using on a car
 
-- **Not yet tested on a real car or a real OpenPort.** The D-CAN and HSFZ code is tested end to end against the
-  built-in simulator, which follows the protocols as documented by the open-source BMW tooling community. The J2534
-  binding follows the J2534 v04.04 API and the driver handling of Diogenes-ImGui, but has not run against a physical
-  adapter yet. Real gateways may differ in details, such as which DIDs each module answers.
+- **Tested on one car so far:** a 2025 G20 through a Tactrix OpenPort 2.0 on macOS (scan, fault codes and details, live
+  data, coding read). ENET has only been tested against the built-in simulator. Other models and gateways may differ
+  in details, such as which DIDs each module answers.
+- The oil temperature gauge uses BMW DME value 4D80, found on that G20 and not yet confirmed against the car's own
+  display; other engines may use another DID.
 - **G series and D-CAN:** BMW's own tools use ENET on G series. How much the G series gateway routes from the OBD CAN
   pins varies by model and software level: some modules may not answer over D-CAN that do over ENET. Standard OBD-II
   (the engine gauges' fallback) is required by law and always works.

@@ -19,6 +19,9 @@ namespace GDiag
         public string DtcError;
         public DateTime? DtcReadAt;
 
+        // coding blocks (DID 3000-3FFF) read from the module, filled by ReadCoding
+        public SortedDictionary<ushort, byte[]> Coding;
+
         public string Cafd => Svk?.FirstOrDefault(s => s.ProcessClass == 0x05)?.ToString() ?? "";
         public string PartNumber => Ident.TryGetValue(0xF187, out var p) ? p : "";
     }
@@ -184,12 +187,182 @@ namespace GDiag
             return null;
         }
 
+        // set when the DME refused a request for several DIDs at once, so they are asked one by one from then on
+        volatile bool NoMultiDid;
+        volatile bool NoMultiPid;
+
+        // Several engine values in one request: "22 F40C F40D ..." (ISO 14229 allows up to the server's limit) or,
+        // for values that only answer as OBD-II, "01 0C 0D ..." (up to 6 PIDs). Returns the record of each value
+        // that came back; the rest are read one at a time by the caller.
+        public Dictionary<LiveValue, byte[]> ReadLiveBatch(IList<LiveValue> values)
+        {
+            var result = new Dictionary<LiveValue, byte[]>();
+            var batchable = values.Where(v => v.Batchable).ToList();
+            var uds = batchable.Where(v => !ObdOnly.ContainsKey(v.Id)).ToList();
+            var obd = batchable.Where(v => v.IsObd && ObdOnly.ContainsKey(v.Id)).ToList();
+
+            if (!NoMultiDid)
+            {
+                foreach (var chunk in uds.GroupBy(v => v.Module).SelectMany(g => g.Chunk(6)).Where(c => c.Length > 1))
+                {
+                    var request = new List<byte> { UdsClient.ReadDataByIdentifier };
+                    foreach (var v in chunk)
+                    {
+                        request.Add((byte)(v.Did >> 8));
+                        request.Add((byte)v.Did);
+                    }
+                    var response = Uds.Request(chunk[0].Module, request.ToArray());
+                    if (response.Nrc == 0x13 || response.Nrc == 0x14 || response.Nrc == 0x12)
+                    {
+                        NoMultiDid = true;
+                        break;
+                    }
+                    if (response.Positive)
+                    {
+                        SplitRecords(response.Data, 1, 2, chunk, result);
+                    }
+                }
+            }
+
+            if (!NoMultiPid && Uds.Transport is DCanTransport)
+            {
+                foreach (var chunk in obd.Chunk(6).Where(c => c.Length > 1))
+                {
+                    var request = new List<byte> { 0x01 };
+                    request.AddRange(chunk.Select(v => (byte)v.Did));
+                    var response = Uds.Request(DCanTransport.ObdEngine, request.ToArray());
+                    if (!response.Positive && response.Nrc != 0)
+                    {
+                        NoMultiPid = true;
+                        break;
+                    }
+                    if (response.Positive)
+                    {
+                        SplitRecords(response.Data, 1, 1, chunk, result);
+                    }
+                }
+            }
+            return result;
+        }
+
+        // walks "id record id record ..." with ids of idBytes bytes; stops at an id it doesn't expect
+        static void SplitRecords(byte[] data, int start, int idBytes, IList<LiveValue> asked, Dictionary<LiveValue, byte[]> result)
+        {
+            int i = start;
+            while (i + idBytes <= data.Length)
+            {
+                uint id = Hex.BigEndian(data, i, idBytes);
+                var value = asked.FirstOrDefault(v => (idBytes == 2 ? v.Did : (byte)v.Did) == id);
+                if (value is null || i + idBytes + value.RecordLength > data.Length)
+                {
+                    return;
+                }
+                result[value] = data.Skip(i + idBytes).Take(value.RecordLength).ToArray();
+                i += idBytes + value.RecordLength;
+            }
+        }
+
+        // the OBD PIDs the engine says it has, from the support bitmaps; null when it doesn't answer them
+        public HashSet<byte> ReadSupportedPids()
+        {
+            var supported = new HashSet<byte>();
+            bool any = false;
+            for (byte basePid = 0x00; basePid <= 0xC0; basePid += 0x20)
+            {
+                if (basePid != 0 && !supported.Contains(basePid))
+                {
+                    break;
+                }
+                var probe = new LiveValue { Id = $"pids{basePid:X2}", Module = 0x12, Did = (ushort)(0xF400 | basePid), ByteCount = 4 };
+                byte[] bitmap = ReadLive(probe, out _);
+                if (bitmap is null || bitmap.Length < 4)
+                {
+                    break;
+                }
+                any = true;
+                supported.UnionWith(LiveData.SupportedPids(basePid, bitmap));
+            }
+            return any ? supported : null;
+        }
+
         public void ReadDtcs(ModuleState module)
         {
             var dtcs = Uds.ReadDtcs(module.Address, out var response);
             module.Dtcs = dtcs;
             module.DtcError = dtcs is null ? response.Describe() : null;
             module.DtcReadAt = DateTime.Now;
+        }
+
+        public void ReadDtcDetails(Dtc dtc)
+        {
+            var details = new DtcDetails();
+            byte[] code = { (byte)(dtc.Code >> 16), (byte)(dtc.Code >> 8), (byte)dtc.Code };
+            var snapshots = Uds.Request(dtc.Module, new byte[] { UdsClient.ReadDtcInformation, 0x04, code[0], code[1], code[2], 0xFF });
+            if (snapshots.Positive)
+            {
+                details.Snapshots = DtcDetails.ParseSnapshots(snapshots.Data);
+            }
+            else
+            {
+                details.Error = snapshots.Describe();
+            }
+            var extended = Uds.Request(dtc.Module, new byte[] { UdsClient.ReadDtcInformation, 0x06, code[0], code[1], code[2], 0xFF });
+            if (extended.Positive)
+            {
+                DtcDetails.ParseExtended(extended.Data, details);
+            }
+            dtc.Details = details;
+        }
+
+        // Reads the module's coding: on F/G series every coding block is a DID from 3000 to 3FFF, the same
+        // number E-Sys shows in front of a block ("3002 KomfortSchliessen"). Only reads (service 22).
+        public SortedDictionary<ushort, byte[]> ReadCoding(ModuleState module, Action<string> progress = null, Func<bool> cancelled = null)
+        {
+            var blocks = new SortedDictionary<ushort, byte[]>();
+            int savedTimeout = Uds.TimeoutMs;
+            Uds.TimeoutMs = 300;
+            int silent = 0;
+            try
+            {
+                for (int did = 0x3000; did <= 0x3FFF; did++)
+                {
+                    if (cancelled?.Invoke() == true)
+                    {
+                        break;
+                    }
+                    if ((did & 0xFF) == 0)
+                    {
+                        progress?.Invoke($"{module.Info.Short}: block {did:X4} ({blocks.Count} found)");
+                    }
+                    byte[] record = Uds.ReadDid(module.Address, (ushort)did, out var response);
+                    if (record != null)
+                    {
+                        blocks[(ushort)did] = record;
+                    }
+                    if (response.TimedOut)
+                    {
+                        // a module that doesn't answer at all would take 20 minutes to walk through
+                        if (++silent >= 8)
+                        {
+                            break;
+                        }
+                    }
+                    else
+                    {
+                        silent = 0;
+                    }
+                    if (response.Nrc == 0x11 || response.Nrc == 0x7F)
+                    {
+                        break;
+                    }
+                }
+            }
+            finally
+            {
+                Uds.TimeoutMs = savedTimeout;
+            }
+            module.Coding = blocks;
+            return blocks;
         }
 
         public UdsResponse ClearDtcs(ModuleState module)

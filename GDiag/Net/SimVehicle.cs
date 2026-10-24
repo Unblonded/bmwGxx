@@ -19,6 +19,7 @@ namespace GDiag.Net
             public string PartNumber;
             public byte[] Svk;
             public List<(uint code, byte status)> Dtcs = new List<(uint, byte)>();
+            public Dictionary<ushort, byte[]> Coding = new Dictionary<ushort, byte[]>();
             public byte Session = 0x01;
         }
 
@@ -60,6 +61,14 @@ namespace GDiag.Net
             }
             var ecu = new SimEcu { Address = address, PartNumber = partNumber, Svk = svk.ToArray() };
             ecu.Dtcs.AddRange(dtcs);
+            // a few coding blocks with made-up contents
+            var random = new Random(address);
+            foreach (ushort block in new ushort[] { 0x3000, 0x3001, 0x3002, 0x3010, 0x3020 })
+            {
+                var data = new byte[8 + random.Next(24)];
+                random.NextBytes(data);
+                ecu.Coding[block] = data;
+            }
             Ecus[address] = ecu;
         }
 
@@ -109,17 +118,51 @@ namespace GDiag.Net
                         yield return Positive(0x00);
                     }
                     break;
-                case 0x22 when request.Length >= 3:
-                    ushort did = (ushort)(request[1] << 8 | request[2]);
-                    byte[] record = ReadDid(ecu, did);
-                    if (record != null)
+                case 0x22 when request.Length >= 3 && request.Length % 2 == 1:
+                    // several DIDs in one request: the answer carries the ones this unit has
+                    var records = new List<byte>();
+                    for (int i = 1; i + 1 < request.Length; i += 2)
                     {
-                        yield return Positive(new[] { request[1], request[2] }.Concat(record).ToArray());
+                        byte[] record = ReadDid(ecu, (ushort)(request[i] << 8 | request[i + 1]));
+                        if (record != null)
+                        {
+                            records.Add(request[i]);
+                            records.Add(request[i + 1]);
+                            records.AddRange(record);
+                        }
+                    }
+                    if (records.Count > 0)
+                    {
+                        yield return Positive(records.ToArray());
                     }
                     else if (!functional)
                     {
                         yield return Negative(0x31);
                     }
+                    break;
+                case 0x19 when request.Length == 6 && (request[1] == 0x04 || request[1] == 0x06):
+                    uint wanted = (uint)(request[2] << 16 | request[3] << 8 | request[4]);
+                    var entry = ecu.Dtcs.FirstOrDefault(d => d.code == wanted);
+                    if (entry.code != wanted)
+                    {
+                        yield return Negative(0x31);
+                        break;
+                    }
+                    var details = new List<byte> { request[1], request[2], request[3], request[4], entry.status };
+                    if (request[1] == 0x04)
+                    {
+                        // first and latest time, BMW layout: mileage, time, two standard values, one of the fault's own
+                        foreach (var (number, km) in new[] { (1, 21940), (2, 24105) })
+                        {
+                            details.AddRange(new byte[] { (byte)number, 5, 0x17, 0x00, (byte)(km >> 16), (byte)(km >> 8), (byte)km,
+                                0x17, 0x01, 0x03, 0x26, 0xEE, (byte)number, 0x17, 0x50, 0x55, 0x17, 0x51, 0x11, 0x02, 0x00, 0x41, 0x02, 0x03 });
+                        }
+                    }
+                    else
+                    {
+                        details.AddRange(new byte[] { 0x01, 0x00, 0x02, 0x04, 0x03, 0xFF });
+                    }
+                    yield return Positive(details.ToArray());
                     break;
                 case 0x19 when request.Length == 3 && request[1] == 0x02:
                     var report = new List<byte> { 0x02, 0xFF };
@@ -159,9 +202,21 @@ namespace GDiag.Net
                 case 0xF186: return new[] { ecu.Session };
                 case 0xF101: return ecu.Svk;
             }
-            if (ecu.Address == 0x12 && (did & 0xFF00) == 0xF400)
+            // the support bitmaps (PID 00, 20 ...) only answer as OBD-II here, like on some real DMEs
+            if (ecu.Address == 0x12 && (did & 0xFF00) == 0xF400 && (did & 0x1F) != 0)
             {
                 return EngineValue((byte)did);
+            }
+            if (ecu.Address == 0x12 && did == 0x4D80)
+            {
+                // oil temperature in tenths of a kelvin, warming a little slower than the coolant
+                double t = (DateTime.UtcNow - Started).TotalSeconds;
+                int raw = (int)Math.Round((Math.Min(102, 30 + t * 0.6) + 273.15) * 10);
+                return new[] { (byte)(raw >> 8), (byte)raw };
+            }
+            if (did >= 0x3000 && did <= 0x3FFF && ecu.Coding.TryGetValue(did, out var block))
+            {
+                return block;
             }
             return null;
         }
@@ -169,11 +224,6 @@ namespace GDiag.Net
         // standard OBD-II mode 01 data for a PID, or null when the engine doesn't support it
         public byte[] ObdMode01(byte pid)
         {
-            if (pid == 0x00)
-            {
-                // supported PIDs 01-20: 04 05 0B 0C 0D 0E 0F 10 11 1F
-                return new byte[] { 0x18, 0x3F, 0x80, 0x02 };
-            }
             return EngineValue(pid);
         }
 
@@ -187,6 +237,19 @@ namespace GDiag.Net
             {
                 int raw = (int)Math.Clamp(Math.Round(v), 0, 65535);
                 return new[] { (byte)(raw >> 8), (byte)raw };
+            }
+            if ((pid & 0x1F) == 0 && pid <= 0xC0)
+            {
+                // supported PIDs bitmap for pid+1 .. pid+32, the last bit saying whether the next bitmap exists
+                var bitmap = new byte[4];
+                for (int i = 1; i <= 32; i++)
+                {
+                    if (pid + i <= 0xFF && (i == 32 ? EngineValue((byte)(pid + 32)) != null : EngineValue((byte)(pid + i)) != null))
+                    {
+                        bitmap[(i - 1) / 8] |= (byte)(0x80 >> ((i - 1) % 8));
+                    }
+                }
+                return bitmap.Any(b => b != 0) || pid == 0 ? bitmap : null;
             }
             switch (pid)
             {
@@ -204,7 +267,16 @@ namespace GDiag.Net
                 case 0x33: return new[] { B(101) };
                 case 0x42: return W((14.1 + 0.1 * wave) * 1000);
                 case 0x46: return new[] { B(17 + 40) };
-                case 0x5C: return new[] { B(Math.Min(105, 30 + t * 0.6) + 40) };
+                case 0x06: return new[] { B(128 + 4 * wave) };
+                case 0x07: return new[] { B(126) };
+                case 0x23: return W(500 + 300 * Math.Max(0, Math.Sin(t * 0.21)));
+                case 0x3C: return W((380 + 40 * wave + 40) * 10);
+                case 0x45: return new[] { B((1 + 20 * Math.Max(0, Math.Sin(t * 0.21))) * 255 / 100) };
+                case 0x49: return new[] { B((15 + 25 * Math.Max(0, Math.Sin(t * 0.21))) * 255 / 100) };
+                case 0x62: return new[] { B(125 + 5 + 40 * Math.Max(0, Math.Sin(t * 0.21))) };
+                case 0x63: return W(400);
+                case 0x9D: return new byte[] { 0, B(6 + 30 * Math.Max(0, Math.Sin(t * 0.21))), 0, 6 };
+                case 0xA6: return new byte[] { 0x00, 0x03, 0xAD, 0x6A };
                 default: return null;
             }
         }

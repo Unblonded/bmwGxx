@@ -37,6 +37,9 @@ namespace GDiag
         public bool FullScan { get; set; } = false;
         // live data values the user pinned: "address|did|name|scale|offset|unit|bytes|signed"
         public List<string> CustomDids { get; set; } = new List<string>();
+        // live value ids shown as gauges and as charts on the Live data tab
+        public List<string> LiveGauges { get; set; }
+        public List<string> LiveCharts { get; set; } = new List<string>();
 
         public static AppSettings Current { get; private set; } = Load();
 

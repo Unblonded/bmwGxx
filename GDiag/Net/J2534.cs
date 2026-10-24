@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -411,17 +412,33 @@ namespace GDiag.Net
         // frames received within timeoutMs, as (id, data); empty when none
         public List<(uint id, byte[] data)> Read(int timeoutMs)
         {
+            // A blocking PassThruReadMsgs holds the lock that writes need (the macOS OpenPort driver blocks ~100 ms
+            // whatever timeout it is given), so poll without waiting in the driver and sleep outside the lock.
+            var deadline = DateTime.UtcNow.AddMilliseconds(timeoutMs);
+            while (true)
+            {
+                var result = ReadBatch(MsgBufferCount, 0);
+                if (result.Count > 0 || DateTime.UtcNow >= deadline)
+                {
+                    return result;
+                }
+                Thread.Sleep(1);
+            }
+        }
+
+        List<(uint id, byte[] data)> ReadBatch(int wanted, int timeoutMs)
+        {
             var result = new List<(uint, byte[])>();
             lock (CallLock)
             {
-                WriteLong(Scratch, 0, MsgBufferCount);
+                WriteLong(Scratch, 0, wanted);
                 int status = PRead(ChannelId, MsgBuffer, Scratch, timeoutMs);
                 if (status != 0 && status != ErrBufferEmpty && status != ErrTimeout)
                 {
                     throw new J2534Exception("PassThruReadMsgs", status, LastError());
                 }
                 int count = ReadLong(Scratch, 0);
-                for (int i = 0; i < count && i < MsgBufferCount; i++)
+                for (int i = 0; i < count && i < wanted; i++)
                 {
                     IntPtr msg = MsgBuffer + i * MessageSize;
                     int rxStatus = ReadLong(msg, L);

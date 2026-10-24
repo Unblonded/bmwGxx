@@ -178,7 +178,7 @@ namespace GDiag.Uds
         public byte[] ReadDid(byte target, ushort did) => ReadDid(target, did, out _);
 
         // report DTCs by status mask (19 02). Returns null when the control unit didn't answer.
-        public List<Dtc> ReadDtcs(byte target, out UdsResponse response, byte statusMask = 0xFF)
+        public List<Dtc> ReadDtcs(byte target, out UdsResponse response, byte statusMask = Dtc.FaultMask)
         {
             response = Request(target, new byte[] { ReadDtcInformation, 0x02, statusMask }, 4000);
             if (!response.Positive)

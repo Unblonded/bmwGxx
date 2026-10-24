@@ -422,6 +422,12 @@ namespace GDiag.UI
                     Settings.AdvancedMode = advanced;
                     Settings.Save();
                 }
+                bool usUnits = Settings.UsUnits;
+                if (ImGui.MenuItem("US units (°F, mph, psi, mi, lb-ft, hp)", null, ref usUnits))
+                {
+                    Settings.UsUnits = usUnits;
+                    Settings.Save();
+                }
                 bool translate = Settings.TranslateToEnglish;
                 if (ImGui.MenuItem("Translate German coding names", null, ref translate))
                 {
@@ -611,7 +617,7 @@ namespace GDiag.UI
             TabItem($"{Icons.Warning}  Fault codes", Faults.Draw);
             TabItem($"{Icons.Speedometer}  Live data", Live.Draw);
             TabItem($"{Icons.Key}  Vehicle order", Order.Draw);
-            TabItem($"{Icons.Code}  Coding explainer", Coding.Draw);
+            TabItem($"{Icons.Code}  Coding", Coding.Draw);
             if (Settings.AdvancedMode)
             {
                 TabItem($"{Icons.Terminal}  Console", ConsolePanel.Draw);

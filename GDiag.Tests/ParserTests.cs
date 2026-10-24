@@ -31,6 +31,47 @@ namespace GDiag.Tests
         }
 
         [Fact]
+        public void UsUnits()
+        {
+            Assert.Equal((212.0, "°F"), LiveData.ToDisplayUnits(100, "°C", us: true));
+            var (psi, unit) = LiveData.ToDisplayUnits(1, "bar", us: true);
+            Assert.Equal("psi", unit);
+            Assert.Equal(14.5, psi, 1);
+            Assert.Equal("lb-ft", LiveData.ToDisplayUnits(400, "Nm", us: true).unit);
+            Assert.Equal("hp", LiveData.ToDisplayUnits(100, "kW", us: true).unit);
+            Assert.Equal("mi", LiveData.ToDisplayUnits(100, "km", us: true).unit);
+            // metric stays as the car sent it
+            Assert.Equal((1.0, "bar"), LiveData.ToDisplayUnits(1, "bar", us: false));
+        }
+
+        [Fact]
+        public void DtcReportSkipsUntestedCodes()
+        {
+            // 40 and 50 only say "not tested yet": a G20 DME lists over a hundred of those with mask FF
+            byte[] response = { 0x59, 0x02, 0xFF, 0x03, 0x4A, 0x23, 0x50, 0x03, 0x4B, 0x1E, 0x40, 0x22, 0x4F, 0x95, 0x20 };
+            var dtcs = Dtc.ParseReport(response, 0x12);
+            Assert.Equal("224F95", Assert.Single(dtcs).CodeText);
+            Assert.Equal("Happened since last clear", dtcs[0].Summary);
+        }
+
+        [Fact]
+        public void DtcSnapshotsFromG20Bdc()
+        {
+            // 19 04 804081 FF from a real BDC: first and latest occurrence
+            byte[] response = Hex.TryParse("59 04 80 40 81 0C 01 05 17 00 00 38 95 17 01 03 26 EE F7 17 50 55 17 51 11 02 00 41 02 03 " +
+                                           "02 05 17 00 00 45 DE 17 01 03 87 33 94 17 50 55 17 51 11 02 01 41 02 03", out var r) ? r : null;
+            var snapshots = DtcDetails.ParseSnapshots(response);
+            Assert.Equal(2, snapshots.Count);
+            Assert.Equal(14485u, snapshots[0].Mileage);
+            Assert.Equal(17886u, snapshots[1].Mileage);
+            Assert.Equal(5, snapshots[1].Values.Count);
+
+            var details = new DtcDetails();
+            DtcDetails.ParseExtended(new byte[] { 0x59, 0x06, 0x80, 0x40, 0x81, 0x0C, 0x01, 0x00, 0x02, 0x11, 0x03, 0xFF }, details);
+            Assert.Equal(17, details.Occurrences);
+        }
+
+        [Fact]
         public void VehicleOrderStream()
         {
             var fa = VehicleOrder.Parse("G020#0719*5U31%A96&MAMU$205$2VB$S5ACA-ABCD+XYZ1");

@@ -99,6 +99,32 @@ namespace GDiag.UI
                 return;
             }
 
+            var all = modules.Where(m => m.Dtcs != null).SelectMany(m => m.Dtcs).ToList();
+            int active = all.Count(d => d.TestFailed);
+            int stored = all.Count(d => !d.TestFailed && d.Confirmed);
+            int withFaults = modules.Count(m => m.Dtcs?.Count > 0);
+            if (all.Count == 0)
+            {
+                Colored(Theme.Good, $"{Icons.CheckCircle}  No faults in any of the {modules.Count(m => m.Dtcs != null)} control units read.");
+            }
+            else
+            {
+                Fonts.Push(Fonts.Semibold);
+                ImGui.TextUnformatted($"{all.Count} fault{(all.Count == 1 ? "" : "s")} in {withFaults} control unit{(withFaults == 1 ? "" : "s")}:");
+                Fonts.Pop();
+                ImGui.SameLine();
+                Pill($"{active} active now", active > 0 ? Theme.Bad : Theme.Dim);
+                ImGui.SameLine();
+                Pill($"{stored} stored", stored > 0 ? Theme.Warn : Theme.Dim);
+                ImGui.SameLine();
+                Pill($"{all.Count - active - stored} other", Theme.Dim);
+                Tooltip("Pending, or happened at some point since the fault memory was last cleared.");
+                ImGui.SameLine();
+                Help("Only real faults are listed. Codes a module can set but hasn't finished testing this drive " +
+                     "(\"not tested yet\") are left out; other tools sometimes show those as hundreds of entries.");
+            }
+            ImGui.Spacing();
+
             var flags = ImGuiTableFlags.RowBg | ImGuiTableFlags.BordersInnerH | ImGuiTableFlags.ScrollY | ImGuiTableFlags.Resizable;
             if (!ImGui.BeginTable("dtcs", 5, flags))
             {
@@ -109,13 +135,13 @@ namespace GDiag.UI
             ImGui.TableSetupColumn("Code", ImGuiTableColumnFlags.WidthFixed, S(90));
             ImGui.TableSetupColumn("Description", ImGuiTableColumnFlags.WidthStretch);
             ImGui.TableSetupColumn("Status", ImGuiTableColumnFlags.WidthFixed, S(230));
-            ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, S(80));
+            ImGui.TableSetupColumn("", ImGuiTableColumnFlags.WidthFixed, S(260));
             ImGui.TableHeadersRow();
 
             foreach (var m in modules.Where(m => m.Dtcs != null || m.DtcError != null))
             {
                 var dtcs = (m.Dtcs ?? new()).Where(d => !OnlyActive || d.TestFailed)
-                    .Where(d => Filter.Length == 0 || Matches(m, d)).ToList();
+                    .Where(d => Filter.Length == 0 || Matches(m, d)).OrderBy(d => d.Severity).ToList();
                 if (m.Dtcs != null && dtcs.Count == 0 && (Filter.Length > 0 || OnlyActive))
                 {
                     continue;
@@ -177,9 +203,57 @@ namespace GDiag.UI
                     Pill(d.Summary, d.TestFailed ? Theme.Bad : d.Confirmed ? Theme.Warn : Theme.Dim);
                     Tooltip($"Status 0x{d.Status:X2}:\n- {string.Join("\n- ", d.StatusBits())}");
                     ImGui.TableNextColumn();
+                    if (d.Details is null)
+                    {
+                        ImGui.BeginDisabled(App.Busy);
+                        bool details = ImGui.SmallButton($"Details##{m.Address}{d.Code}");
+                        ImGui.EndDisabled();
+                        if (details)
+                        {
+                            var dtc = d;
+                            App.RunBackground($"Reading details of {d.CodeText}", () => session.ReadDtcDetails(dtc), null, true);
+                        }
+                        Tooltip("When and how often it happened (the module's freeze frame)");
+                    }
+                    else
+                    {
+                        DrawDetails(d.Details);
+                    }
                 }
             }
             ImGui.EndTable();
+        }
+
+        // one line under the code: first and latest mileage and how often, from the module's snapshots
+        static void DrawDetails(DtcDetails details)
+        {
+            var parts = new System.Collections.Generic.List<string>();
+            var miles = details.Snapshots.Where(s => s.Mileage != null).Select(s => s.Mileage.Value).ToList();
+            bool us = Settings.UsUnits;
+            string Km(uint km) => us ? $"{km * 0.621371:N0} mi" : $"{km:N0} km";
+            if (miles.Count == 1)
+            {
+                parts.Add($"at {Km(miles[0])}");
+            }
+            else if (miles.Count > 1)
+            {
+                parts.Add(miles.Min() == miles.Max() ? $"at {Km(miles[0])}" : $"first at {Km(miles.Min())}, latest at {Km(miles.Max())}");
+            }
+            if (details.Occurrences is int n)
+            {
+                parts.Add($"{n} time{(n == 1 ? "" : "s")}");
+            }
+            if (parts.Count == 0)
+            {
+                ImGui.TextDisabled(details.Error != null ? "no details" : "no freeze frame");
+            }
+            else
+            {
+                ImGui.TextDisabled(string.Join(", ", parts));
+            }
+            var lines = details.Snapshots.SelectMany(s => s.Values.Select(v => $"#{s.Number} {DtcDetails.DidName(v.did)}: {Hex.Format(v.data)}"))
+                .Concat(details.Extended.Select(e => $"extended {e.Key:X2}: {Hex.Format(e.Value)}"));
+            Tooltip(string.Join("\n", lines.DefaultIfEmpty(details.Error ?? "The module keeps no snapshot for this fault.")));
         }
 
         bool Matches(ModuleState m, Dtc d)
